@@ -2,16 +2,19 @@
 import tensorflow as tf
 from tensorflow import keras
 
-def l1_ssim_edge(y_true, y_pred):
+def l1_ssim_edge(l1_weight=1.0, ssim_weight=1.0, edge_weight=1.0):
 
-  ssim_error = ssim_loss(y_true, y_pred)
+  def func(y_true, y_pred):
+    ssim_error = ssim_loss(y_true, y_pred)
 
-  edge_error = edge_loss(y_true, y_pred)
+    edge_error = edge_loss(y_true, y_pred)
 
-  mae = tf.keras.losses.MeanAbsoluteError()
-  mae_error = mae(y_true, y_pred)
+    mae = tf.keras.losses.MeanAbsoluteError()
+    mae_error = mae(y_true, y_pred)
 
-  return mae_error  + 0.5*edge_error + 0.5*ssim_error
+    return l1_weight * mae_error  + edge_weight * edge_error + ssim_weight * ssim_error
+
+  return func
 
 
 def ssim_loss(y_true, y_pred):

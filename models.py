@@ -155,7 +155,7 @@ def mobilenet_segmentation(img_width, img_height, img_channels):
 	optimizer = keras.optimizers.SGD(learning_rate=1e-6, momentum=0.9)
 	loss = class_balanced_cross_entropy_loss
 	metrics = ['binary_accuracy']
-	print(model.summary())
+	# print(model.summary())
 	return (model, optimizer, loss, metrics)
 
 
@@ -439,5 +439,5 @@ def mobilenet_unet(img_width, img_height, img_channels):
 
 	model = Model(inputs, x)
 
-	print(model.summary())
+	# print(model.summary())
 	return model
