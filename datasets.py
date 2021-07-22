@@ -173,7 +173,7 @@ def nyu_depth_ds(path, train_test_split):
       tf.TensorSpec(shape=(480, 640), dtype=tf.float32)
     )
 
-  train_ds = tf.data.Dataset.from_generator(train_generator, output_signature=ds_signature)
-  test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature)
+  train_ds = tf.data.Dataset.from_generator(train_generator, output_signature=ds_signature).cache()
+  test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature).cache()
 
   return train_ds, test_ds, train_size, test_size

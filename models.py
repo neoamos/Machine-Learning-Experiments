@@ -412,10 +412,10 @@ def unet(img_width, img_height, img_channels):
 	return model
 
 
-def mobilenet_unet(img_width, img_height, img_channels):
+def mobilenet_unet(img_width, img_height, img_channels, weights="imagenet", alpha=0.35):
 	inputs = Input(shape=(img_height, img_width, 3), name="input_image")
 
-	encoder = MobileNetV2(input_tensor=inputs, weights="imagenet", include_top=False, alpha=0.35)
+	encoder = MobileNetV2(input_tensor=inputs, weights=weights, include_top=False, alpha=alpha)
 	skip_connection_names = ["input_image", "block_1_expand_relu", "block_3_expand_relu", "block_6_expand_relu"]
 	encoder_output = encoder.get_layer("block_13_expand_relu").output
 
