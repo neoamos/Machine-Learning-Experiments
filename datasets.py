@@ -141,3 +141,39 @@ def nyu_depth(path, dsize=(320, 224)):
   images = np.stack(images)
   depths = np.stack(depths)
   return (images, depths)
+
+def nyu_depth_ds(path, train_test_split):
+  database = h5py.File(path)
+
+  size = database['images'].shape[0]
+  train_size = math.floor((1- train_test_split) * size)
+  test_size = size - train_size
+
+  def process_example(index):
+    image = database['images'][index]
+    image = np.transpose(image)
+    image = (image/255)
+
+    depth = database['depths'][index]
+    depth = np.transpose(depth)
+    depth = depth/10
+
+    return image, depth
+
+  def train_generator():
+    for i in range(0, train_size):
+      yield process_example(i)
+
+  def test_generator():
+    for i in range(train_size+1, size):
+      yield process_example(i)
+
+  ds_signature = (
+      tf.TensorSpec(shape=(480, 640, 3), dtype=tf.float32),
+      tf.TensorSpec(shape=(480, 640), dtype=tf.float32)
+    )
+
+  train_ds = tf.data.Dataset.from_generator(train_generator, output_signature=ds_signature)
+  test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature)
+
+  return train_ds, test_ds, train_size, test_size
