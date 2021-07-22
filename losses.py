@@ -33,3 +33,20 @@ def edge_loss(y_true, y_pred):
 
   return tf.reduce_mean(tf.abs(edges_pred - edges_true))
 
+
+def percent_relative_error(threshold):
+  """
+  Calculates the percent of pixes that are within threshold relative error
+  """
+  def relative_error(y_true, y_pred):
+    error = tf.math.abs(y_true-y_pred)
+    relative_error = error/y_true
+    # tf.print(tf.math.reduce_max(relative_error))
+    # tf.print(tf.math.reduce_min(relative_error))
+
+    less = tf.math.less(relative_error, threshold)
+
+    return tf.reduce_mean(tf.cast(less, tf.float32))
+
+  relative_error.__name__ = "relative_error_{}".format(threshold*100)
+  return relative_error
