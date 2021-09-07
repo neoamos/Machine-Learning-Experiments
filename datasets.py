@@ -12,6 +12,7 @@ import random
 from PIL import Image, ImageDraw
 import h5py
 from sklearn.model_selection import train_test_split
+import scipy.io
 
 def mnist():
   num_classes = 10
@@ -144,15 +145,21 @@ def nyu_depth(path, dsize=(320, 224)):
 
 def nyu_depth_ds(path, train_test_split):
   database = h5py.File(path)
+  splits = scipy.io.loadmat('datasets/nyu_depth/splits.mat')
+  train_indexes = [i[0] for i in splits['trainNdxs']]
+  test_indexes = [i[0] for i in splits['testNdxs']]
 
   size = database['images'].shape[0]
-  train_size = math.floor((1- train_test_split) * size)
-  test_size = size - train_size
+  # train_size = math.floor((1- train_test_split) * size)
+  # test_size = size - train_size
+
+  train_size = len(train_indexes)
+  test_size = len(test_indexes)
 
   def process_example(index):
     image = database['images'][index]
     image = np.transpose(image)
-    image = (image/255)
+    image = (image/127.5)-1
 
     depth = database['depths'][index]
     depth = np.transpose(depth)
@@ -161,19 +168,19 @@ def nyu_depth_ds(path, train_test_split):
     return image, depth
 
   def train_generator():
-    for i in range(0, train_size):
-      yield process_example(i)
+    for i in train_indexes:
+      yield process_example(i-1)
 
   def test_generator():
-    for i in range(train_size+1, size):
-      yield process_example(i)
+    for i in test_indexes:
+      yield process_example(i-1)
 
   ds_signature = (
       tf.TensorSpec(shape=(480, 640, 3), dtype=tf.float32),
       tf.TensorSpec(shape=(480, 640), dtype=tf.float32)
     )
 
-  train_ds = tf.data.Dataset.from_generator(train_generator, output_signature=ds_signature).cache()
-  test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature).cache()
+  train_ds = tf.data.Dataset.from_generator(train_generator, output_signature=ds_signature).shuffle(train_size).cache(filename="train_cache")
+  test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature).cache(filename="test_cache")
 
   return train_ds, test_ds, train_size, test_size

@@ -2,17 +2,14 @@
 import tensorflow as tf
 from tensorflow import keras
 
-def l1_ssim_edge(l1_weight=1.0, ssim_weight=1.0, edge_weight=1.0):
+def l1_ssim_edge(l1_weight=1.0, ssim_weight=1.0, edge_weight=1.0, l=tf.keras.losses.MeanAbsoluteError()):
 
   def func(y_true, y_pred):
     ssim_error = ssim_loss(y_true, y_pred)
-
     edge_error = edge_loss(y_true, y_pred)
+    l_error = l(y_true, y_pred)
 
-    mae = tf.keras.losses.MeanAbsoluteError()
-    mae_error = mae(y_true, y_pred)
-
-    return l1_weight * mae_error  + edge_weight * edge_error + ssim_weight * ssim_error
+    return l1_weight * l_error  + edge_weight * edge_error + ssim_weight * ssim_error
 
   return func
 
@@ -50,3 +47,31 @@ def percent_relative_error(threshold):
 
   relative_error.__name__ = "relative_error_{}".format(threshold*100)
   return relative_error
+
+
+def log_mse(y_true, y_pred):
+  mse = tf.keras.losses.MeanSquaredError()
+
+  return mse(tf.math.log(y_true), tf.math.log(y_pred))
+
+def scale_invariant_mse(y_true, y_pred):
+  y_true = tf.math.log(y_true)
+  y_pred = tf.math.log(y_pred)
+  mse = tf.keras.losses.MeanSquaredError()(y_true, y_pred)
+
+  n = tf.math.pow(tf.size(y_true), 2)
+  tf.print(y_true.shape)
+
+  scale_factor = y_true-y_pred
+  scale_factor = tf.math.pow(tf.reduce_sum(scale_factor), 2)
+  
+  return mse - scale_factor
+
+
+def rmse(y_true, y_pred):
+  y_true = y_true * 10
+  y_pred = y_pred * 10
+
+  mse = tf.keras.losses.MeanSquaredError()
+  return tf.math.sqrt(mse(y_true, y_pred))
+

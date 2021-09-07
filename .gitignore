@@ -2,3 +2,9 @@ venv
 outputs
 *.mat
 __pycache__
+
+train_history/*
+saved_models/*
+test_cache.*
+train_cache.*
+*.h5

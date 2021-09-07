@@ -412,29 +412,56 @@ def unet(img_width, img_height, img_channels):
 	return model
 
 
-def mobilenet_unet(img_width, img_height, img_channels, weights="imagenet", alpha=0.35):
-	inputs = Input(shape=(img_height, img_width, 3), name="input_image")
+def mobilenet_unet(img_width, img_height, img_channels, weights="imagenet", 
+	alpha=0.35, regularize_decoder=True, skip_connections=True, last_channels=16, decoder_initializer='he_normal'):
+	if regularize_decoder:
+		regularizer = regularizers.l2(1e-4)
+	else:
+		regularizer = None
 
-	encoder = MobileNetV2(input_tensor=inputs, weights=weights, include_top=False, alpha=alpha)
-	skip_connection_names = ["input_image", "block_1_expand_relu", "block_3_expand_relu", "block_6_expand_relu"]
+	inputs = Input(shape=(img_height, img_width, img_channels), name="input_image")
+
+
+	if weights == "imagenet" and img_channels > 3:
+		# Use the same weights for first three channels, but new weights for new channels
+		inputs_3 = Input(shape=(img_height, img_width, 3), name="input_image")
+		encoder_pt = MobileNetV2(input_tensor=inputs_3, weights=weights, include_top=False, alpha=alpha)
+		encoder = MobileNetV2(input_tensor=inputs, weights=None, include_top=False, alpha=alpha)
+		for layer_pt in encoder_pt.layers:
+				layer = encoder.get_layer(layer_pt.name)
+				if layer_pt.name == "Conv1":
+						pt_weights = layer_pt.get_weights()[0]
+						weights = layer.get_weights()[0]
+						new_weights = tf.concat([pt_weights, weights[:, :, 3:, :]], 2)
+						layer.set_weights([new_weights])
+				else:
+						layer.set_weights(layer_pt.get_weights())
+	else:
+		encoder = MobileNetV2(input_tensor=inputs, weights=weights, include_top=False, alpha=alpha)
+
+	skip_connection_names = ["block_13_expand_relu", "block_6_expand_relu", "block_3_expand_relu", "block_1_expand_relu", "input_image"]
+	encoder_output = encoder.get_layer("block_16_expand_relu").output
 	encoder_output = encoder.get_layer("block_13_expand_relu").output
 
-	f = [16, 32, 48, 64]
+	channels = [encoder.get_layer(layer_name).output.shape[-1] for layer_name in skip_connection_names]
+	channels[-1] = last_channels
+	channels = channels + [last_channels]
 	x = encoder_output
-	for i in range(1, len(skip_connection_names)+1, 1):
-		x_skip = encoder.get_layer(skip_connection_names[-i]).output
-		x = UpSampling2D((2, 2))(x)
-		x = Concatenate()([x, x_skip])
+	# for i in range(len(skip_connection_names)):
+	# 	x_skip = encoder.get_layer(skip_connection_names[i]).output
+	# 	x = UpSampling2D((2, 2))(x)
+	# 	if skip_connections:
+	# 		x = Concatenate()([x, x_skip])
 		
-		x = Conv2D(f[-i], (3, 3), padding="same")(x)
-		x = BatchNormalization()(x)
-		x = Activation("relu")(x)
+	# 	x = Conv2D(channels[i+1], (5, 5), padding="same", kernel_initializer=decoder_initializer, kernel_regularizer=regularizer)(x)
+	# 	x = BatchNormalization()(x)
+	# 	x = Activation("relu")(x)
 		
-		x = Conv2D(f[-i], (3, 3), padding="same")(x)
-		x = BatchNormalization()(x)
-		x = Activation("relu")(x)
+		# x = Conv2D(10, (3, 3), padding="same")(x)
+		# x = BatchNormalization()(x)
+		# x = Activation("relu")(x)
 			
-	x = Conv2D(1, (1, 1), padding="same")(x)
+	x = Conv2D(1, (1, 1), padding="same", kernel_initializer=decoder_initializer, kernel_regularizer=regularizer)(x)
 	x = Activation("sigmoid")(x)
 
 	model = Model(inputs, x)
