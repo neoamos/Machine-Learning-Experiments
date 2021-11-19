@@ -8,3 +8,8 @@ saved_models/*
 test_cache.*
 train_cache.*
 *.h5
+.ipynb_checkpoints
+data
+datasets
+samples
+pretrained_models

@@ -2,16 +2,17 @@
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Input, UpSampling2D
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization, Add
+from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Input, UpSampling2D, LeakyReLU
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization, Add, SeparableConv2D
 from tensorflow.keras.models import Sequential
+from tensorflow_addons.layers import SpectralNormalization
 from tensorflow.keras import regularizers
 
 from tensorflow.keras.models import *
 from tensorflow.keras.layers import *
 from tensorflow.keras.optimizers import *
 
-from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications import MobileNetV2, DenseNet169
 
 
 def mnist_cnn(img_width, img_height, img_channels, output_dim, batch_norm=False):
@@ -411,16 +412,48 @@ def unet(img_width, img_height, img_channels):
 
 	return model
 
+# def upconv(x, out_chan, skip, conv_size):
+# 	x = UpSampling2D((2, 2))(x)
+# 	if skip != None:
+# 		x = Concatenate()([x, skip])
+	
+# 	x = Conv2D(out_chan, (conv_size, conv_size), padding="same", kernel_initializer='he_normal', kernel_regularizer=regularizers.l2(1e-4))(x)
+# 	x = BatchNormalization()(x)
+# 	x = Activation("relu")(x)
+
+# 	return x
+
+def upconv(x, out_chan, skip, conv_size, separable_conv=False, relu6=False, squeeze=True, spectral_normalization=False):
+	normalize = SpectralNormalization if spectral_normalization else lambda x: x
+	conv = SeparableConv2D if separable_conv else Conv2D
+	relu = tf.keras.layers.ReLU(6.0) if relu6 else Activation("relu")
+	
+	if squeeze:
+		x = normalize(Conv2D(x.shape[-1]/6, (1, 1), padding="same", kernel_initializer='he_normal'))(x)
+	x = UpSampling2D((2, 2))(x)
+	if skip != None:
+		bottleneck = skip.shape[-1]/6
+		if bottleneck < 3:
+			bottleneck = 3
+		if squeeze:
+			skip = normalize(Conv2D(bottleneck, (1, 1), padding="same", kernel_initializer='he_normal'))(skip)
+		x = Concatenate()([x, skip])
+
+	x = normalize(conv(out_chan, (conv_size, conv_size), padding="same", kernel_initializer='he_normal'))(x)
+	x = BatchNormalization()(x)
+	x = relu(x)
+
+	return x
 
 def mobilenet_unet(img_width, img_height, img_channels, weights="imagenet", 
-	alpha=0.35, regularize_decoder=True, skip_connections=True, last_channels=16, decoder_initializer='he_normal'):
+	alpha=0.35, regularize_decoder=True, skip_connections=True, decoder_initializer='he_normal',
+	upconv_size=3, skip_input=True, separable_conv=False, relu6=False, squeeze=True, spectral_normalization=False):
 	if regularize_decoder:
 		regularizer = regularizers.l2(1e-4)
 	else:
 		regularizer = None
 
 	inputs = Input(shape=(img_height, img_width, img_channels), name="input_image")
-
 
 	if weights == "imagenet" and img_channels > 3:
 		# Use the same weights for first three channels, but new weights for new channels
@@ -436,35 +469,141 @@ def mobilenet_unet(img_width, img_height, img_channels, weights="imagenet",
 						layer.set_weights([new_weights])
 				else:
 						layer.set_weights(layer_pt.get_weights())
+	elif weights == "imagenet" and img_channels == 1:
+		# Fuse layer 1 weights into a single filter channel
+		# Essentially the same as having 3 input channels with identical values
+		inputs_3 = Input(shape=(img_height, img_width, 3), name="input_image")
+		encoder_pt = MobileNetV2(input_tensor=inputs_3, weights="imagenet", include_top=False, alpha=alpha)
+		encoder = MobileNetV2(input_tensor=inputs, weights=None, include_top=False, alpha=alpha)
+		for layer_pt in encoder_pt.layers:
+			layer = encoder.get_layer(layer_pt.name)
+			if layer_pt.name == "Conv1":
+					pt_weights = layer_pt.get_weights()[0]
+					new_weights = tf.reduce_sum(pt_weights, axis=2, keepdims=True)
+					layer.set_weights([new_weights])
+			else:
+					layer.set_weights(layer_pt.get_weights())
 	else:
 		encoder = MobileNetV2(input_tensor=inputs, weights=weights, include_top=False, alpha=alpha)
 
-	skip_connection_names = ["block_13_expand_relu", "block_6_expand_relu", "block_3_expand_relu", "block_1_expand_relu", "input_image"]
-	encoder_output = encoder.get_layer("block_16_expand_relu").output
-	encoder_output = encoder.get_layer("block_13_expand_relu").output
+	if skip_input:
+		skip_input = "input_image"
+	else:
+		skip_input = None
+	upconv_layers = range(5)
+	skip_connection_names = ["block_13_expand_relu", "block_6_expand_relu", "block_3_expand_relu", "block_1_expand_relu", skip_input]
 
-	channels = [encoder.get_layer(layer_name).output.shape[-1] for layer_name in skip_connection_names]
-	channels[-1] = last_channels
-	channels = channels + [last_channels]
+	normalize = SpectralNormalization if spectral_normalization else lambda x: x
+	encoder_output = encoder.get_layer("block_16_expand_relu").output
 	x = encoder_output
-	# for i in range(len(skip_connection_names)):
-	# 	x_skip = encoder.get_layer(skip_connection_names[i]).output
-	# 	x = UpSampling2D((2, 2))(x)
-	# 	if skip_connections:
-	# 		x = Concatenate()([x, x_skip])
+	for i in upconv_layers:
+		if skip_connections and skip_connection_names[i] != None:
+			skip = encoder.get_layer(skip_connection_names[i]).output
+		else:
+			skip = None
+
+		x = upconv(x, x.shape[-1]/2, skip, upconv_size, separable_conv=separable_conv, relu6=relu6, squeeze=squeeze, spectral_normalization=spectral_normalization)
 		
-	# 	x = Conv2D(channels[i+1], (5, 5), padding="same", kernel_initializer=decoder_initializer, kernel_regularizer=regularizer)(x)
-	# 	x = BatchNormalization()(x)
-	# 	x = Activation("relu")(x)
-		
-		# x = Conv2D(10, (3, 3), padding="same")(x)
-		# x = BatchNormalization()(x)
-		# x = Activation("relu")(x)
-			
-	x = Conv2D(1, (1, 1), padding="same", kernel_initializer=decoder_initializer, kernel_regularizer=regularizer)(x)
+	x = normalize(Conv2D(1, (3, 3), padding="same", kernel_initializer=decoder_initializer, kernel_regularizer=regularizer))(x)
 	x = Activation("sigmoid")(x)
 
 	model = Model(inputs, x)
 
 	# print(model.summary())
+	return model
+
+
+def discriminator(image_shape, spectral_normalization=False):
+	# weight initialization
+	init = 'he_normal'
+	# source image input
+	in_src_image = Input(shape=image_shape)
+	# target image input
+	in_target_image = Input(shape=(224,224,1))
+	# concatenate images channel-wise
+	normalize = SpectralNormalization if spectral_normalization else lambda x: x
+
+	merged = Concatenate()([in_src_image, in_target_image])
+	# C64
+	d = normalize(Conv2D(64, (4,4), strides=(2,2), padding='same', kernel_initializer=init))(merged)
+	d = LeakyReLU(alpha=0.2)(d)
+	# C128
+	d = normalize(Conv2D(128, (4,4), strides=(2,2), padding='same', kernel_initializer=init))(d)
+	d = BatchNormalization()(d)
+	d = LeakyReLU(alpha=0.2)(d)
+	# C256
+	d = normalize(Conv2D(256, (4,4), strides=(2,2), padding='same', kernel_initializer=init))(d)
+	d = BatchNormalization()(d)
+	d = LeakyReLU(alpha=0.2)(d)
+	# C512
+	d = normalize(Conv2D(512, (4,4), strides=(2,2), padding='same', kernel_initializer=init))(d)
+	d = BatchNormalization()(d)
+	d = LeakyReLU(alpha=0.2)(d)
+	# second last output layer
+	d = normalize(Conv2D(512, (4,4), padding='same', kernel_initializer=init))(d)
+	d = BatchNormalization()(d)
+	d = LeakyReLU(alpha=0.2)(d)
+	# patch output
+	d = normalize(Conv2D(1, (4,4), padding='same', kernel_initializer=init))(d)
+	patch_out = Activation('sigmoid')(d)
+	# define model
+	model = Model([in_src_image, in_target_image], patch_out)
+	return model
+
+
+
+# define the combined generator and discriminator model, for updating the generator
+def gan(g_model, d_model, image_shape):
+	# make weights in the discriminator not trainable
+	for layer in d_model.layers:
+		if not isinstance(layer, BatchNormalization):
+			layer.trainable = False
+	# define the source image
+	in_src = Input(shape=image_shape)
+	# connect the source image to the generator input
+	gen_out = g_model(in_src)
+	# connect the source input and generator output to the discriminator input
+	dis_out = d_model([in_src, gen_out])
+	# src image as input, generated image and classification output
+	model = Model(in_src, [dis_out, gen_out])
+	# compile model
+	return model
+
+
+
+def dense_depth_upscale_block(filters, name, x, skip):      
+	x = UpSampling2D(size=(2, 2), interpolation='bilinear', name=name+'_upsampling2d')(x)
+	x = Concatenate(name=name+'_concat')([x, skip]) # Skip connection        
+	x = Conv2D(filters=filters, kernel_size=3, strides=1, padding='same', name=name+'_convA')(x)
+	x = LeakyReLU(alpha=0.2)(x)
+	x = Conv2D(filters=filters, kernel_size=3, strides=1, padding='same', name=name+'_convB')(x)
+	x = LeakyReLU(alpha=0.2)(x)
+	return x
+
+def dense_depth_encoder(input):               
+	base_model = DenseNet169(input_tensor=input, include_top=False, weights='imagenet')   
+	print('Base model loaded {}'.format(DenseNet169.__name__))
+	
+	# Create encoder model that produce final features along with multiple intermediate features
+	features = [base_model.outputs[-1]]
+	for name in ['pool1', 'pool2_pool', 'pool3_pool', 'conv1/relu'] : features.append( base_model.get_layer(name).output )        
+	return features
+	
+def dense_depth_decoder(decode_filters, features):
+	x, pool1, pool2, pool3, conv1 = features[0], features[1], features[2], features[3], features[4]       
+	x =  Conv2D(filters=decode_filters, kernel_size=1, padding='same', name='conv2')(x)     
+	x = dense_depth_upscale_block(decode_filters//2,  'up1', x, pool3)
+	x = dense_depth_upscale_block(decode_filters//4,  'up2', x, pool2)
+	x = dense_depth_upscale_block(decode_filters//8,  'up3', x, pool1)
+	x = dense_depth_upscale_block(decode_filters//16, 'up4', x, conv1)
+	x = Conv2D(filters=1, kernel_size=3, strides=1, padding='same', name='conv3')(x)
+	return x
+    
+def dense_depth(image_shape):
+	input = Input(shape=image_shape)
+	features = dense_depth_encoder(input)
+	out = dense_depth_decoder( int(features[0].shape[-1] // 2 ), features )
+	out = UpSampling2D((2, 2))(out)
+
+	model = Model(input, out)
 	return model

@@ -13,108 +13,7 @@ from PIL import Image, ImageDraw
 import h5py
 from sklearn.model_selection import train_test_split
 import scipy.io
-
-def mnist():
-  num_classes = 10
-  img_rows, img_cols = 324, 224
-  (x_train, y_train), (x_test, y_test) = mnist.load_data()
-
-  if K.image_data_format() == 'channels_first':
-      x_train = x_train.reshape(x_train.shape[0], 1, img_rows, img_cols)
-      x_test = x_test.reshape(x_test.shape[0], 1, img_rows, img_cols)
-      input_shape = (1, img_rows, img_cols)
-  else:
-      x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, 1)
-      x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, 1)
-      input_shape = (img_rows, img_cols, 1)
-
-  x_train = x_train.astype('float32')
-  x_test = x_test.astype('float32')
-
-  x_train = (x_train / 128) - 1
-  x_test = (x_test / 128) - 1
-
-  # convert class vectors to binary class matrices
-  y_train = keras.utils.to_categorical(y_train, num_classes)
-  y_test = keras.utils.to_categorical(y_test, num_classes)
-
-  return (x_train, y_train), (x_test, y_test)
-
-def cocolike_segmentation(path, image_shape=(324,224), mask_shape=(20,14), alphas=[0.3, 0.5, 0.7, 0.9, 1], output_box=True, fake_rgb=False):
-  with open(path + 'annotations.json') as json_file:
-    data = json.load(json_file)
-
-  annotation_map = {}
-  for a in data['annotations']:
-    annotation_map[a["image_id"]] = a
-  images = []
-  masks = []
-  bboxes = []
-  centerpoint_masks = []
-  # random.Random(3).shuffle(data['images'])
-  for i in data['images']:
-    image = PIL.Image.open(path + i["file_name"]).convert('L')
-    # convert image to numpy array
-    array = np.asarray(image)
-    array = cv2.resize(array, dsize=image_shape, interpolation=cv2.INTER_CUBIC)
-    array = (array[:, :, np.newaxis]/127.5)-1
-    for a in alphas:
-      array_1 = array * a
-      if fake_rgb:
-        array = np.concatenate([array_1, array_1, array_1], axis=2)
-      images.append(array_1)
-      images.append(np.rot90(array_1, 2))
-
-      annotation = annotation_map[i['id']]
-      bbox = annotation['bbox']
-
-      bboxes.append(np.array([
-        (bbox[0]/324)*image_shape[0], 
-        (bbox[1]/244)*image_shape[1],
-        (bbox[2]/324)*image_shape[0],
-        (bbox[3]/244)*image_shape[1],
-        ]))
-        
-      mask = np.zeros((244, 324))
-      mask[bbox[1]:bbox[1]+bbox[3], bbox[0]:bbox[0]+bbox[2]] = 1
-      mask = cv2.resize(mask, dsize=mask_shape, interpolation=cv2.INTER_CUBIC)
-      mask = mask[:, :, np.newaxis]
-      masks.append(mask)
-      masks.append(np.rot90(mask, 2))
-
-      center_x = round((bbox[0]+(bbox[2]/2))/244*mask_shape[0])
-      center_y = round((bbox[1]+(bbox[3]/2))/324*mask_shape[1])
-
-      centerpoint_mask = np.zeros((mask_shape[1], mask_shape[0]))
-      # centerpoint_mask[round((bbox[1]+(bbox[3]/2))/244*mask_shape[1])][round((bbox[0]+(bbox[2]/2))/244*mask_shape[1])] = 1
-      for x in range(mask_shape[0]):
-        for y in range(mask_shape[1]):
-          centerpoint_mask[y][x] = abs(center_x-x) + abs(center_y-y)
-      # centerpoint_mask = centerpoint_mask.flatten()
-      centerpoint_mask = centerpoint_mask[:, :, np.newaxis]
-      centerpoint_masks.append(centerpoint_mask)
-
-  images = np.stack(images)
-  # images_1 = images*0.8
-  # images_2 = images*0.6
-  # images_3 = images*0.4
-  # images = np.concatenate([images, images_1, images_2, images_3])
-  # np.random.shuffle(images)
-  masks = np.stack(masks)
-  bboxes = np.stack(bboxes)
-  centerpoint_masks = np.stack(centerpoint_masks)
-  
-  train_size = math.floor(len(images) * 0.8)
-  test_size = len(images) - train_size
-
-  x_train = images[0:train_size]
-  y_train = masks[0:train_size]
-
-  x_test = images[train_size:len(images)]
-  y_test = masks[train_size:len(masks)]
-
-  return (x_train, y_train), (x_test, y_test)
-
+from sklearn.utils import shuffle
 
 def nyu_depth(path, dsize=(320, 224)):
   database = h5py.File(path)
@@ -163,7 +62,7 @@ def nyu_depth_ds(path, train_test_split):
 
     depth = database['depths'][index]
     depth = np.transpose(depth)
-    depth = depth/10
+    depth = (depth/10)
 
     return image, depth
 
@@ -184,3 +83,56 @@ def nyu_depth_ds(path, train_test_split):
   test_ds = tf.data.Dataset.from_generator(test_generator, output_signature=ds_signature).cache(filename="test_cache")
 
   return train_ds, test_ds, train_size, test_size
+
+
+class LargeDataLoader():
+  def __init__(self, csv_file='data/nyu2_train.csv', DEBUG=False):
+    self.shape_rgb = (480, 640, 3)
+    self.shape_depth = (480, 640, 1)
+    self.read_nyu_data(csv_file, DEBUG=DEBUG)
+
+  def nyu_resize(self, img, resolution=480, padding=6):
+    from skimage.transform import resize
+    return resize(img, (resolution, int(resolution*4/3)), preserve_range=True, mode='reflect', anti_aliasing=True )
+
+  def read_nyu_data(self, csv_file, DEBUG=False):
+    csv = open(csv_file, 'r').read()
+    nyu2_train = list((row.split(',') for row in (csv).split('\n') if len(row) > 0))
+
+    # Dataset shuffling happens here
+    nyu2_train = shuffle(nyu2_train, random_state=0)
+
+    # Test on a smaller dataset
+    if DEBUG: nyu2_train = nyu2_train[:10]
+    
+    # A vector of RGB filenames.
+    self.filenames = [i[0] for i in nyu2_train]
+
+    # A vector of depth filenames.
+    self.labels = [i[1] for i in nyu2_train]
+
+    # Length of dataset
+    self.length = len(self.filenames)
+
+  def _parse_function(self, filename, label): 
+    # Read images from disk
+    image_decoded = tf.image.decode_jpeg(tf.io.read_file(filename))
+    depth_resized = tf.image.resize(tf.image.decode_jpeg(tf.io.read_file(label)), [self.shape_depth[0], self.shape_depth[1]])
+
+    # Format
+    rgb = tf.image.convert_image_dtype(image_decoded, dtype=tf.float32)
+    depth = tf.image.convert_image_dtype(depth_resized / 255.0, dtype=tf.float32)
+    
+    # Normalize the depth values (in cm)
+    depth = 1000 / tf.clip_by_value(depth * 1000, 10, 1000)
+
+    return rgb, depth
+
+
+  def get_dataset(self):
+    self.dataset = tf.data.Dataset.from_tensor_slices((self.filenames, self.labels))
+    self.dataset = self.dataset.shuffle(buffer_size=len(self.filenames), reshuffle_each_iteration=True)
+    # self.dataset = self.dataset.repeat()
+    self.dataset = self.dataset.map(map_func=self._parse_function, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+    return self.dataset
